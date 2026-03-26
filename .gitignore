@@ -1,0 +1,19 @@
+# Credentials (never commit)
+.env
+**/.env
+
+# Downloaded Zoom recordings (large binaries)
+downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
