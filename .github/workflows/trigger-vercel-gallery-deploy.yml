@@ -1,0 +1,21 @@
+# Vercel のギャラリー（Vercel-for-Vimeo）を再デプロイする。
+# Repository secrets に VERCEL_DEPLOY_HOOK_URL（Deploy Hook の URL）を設定してください。
+# https://vercel.com/docs/deploy-hooks
+
+name: Trigger Vercel gallery deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "vimeo_metadata_export.csv"
+
+jobs:
+  deploy-hook:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel production deploy
+        env:
+          VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          curl -fsS -X POST "$VERCEL_DEPLOY_HOOK_URL" -d ''
