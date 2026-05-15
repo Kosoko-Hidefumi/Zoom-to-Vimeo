@@ -45,6 +45,7 @@ def vimeo_request(method: str, url: str, token: str, **kwargs):
     headers = kwargs.pop("headers", {})
     headers["Authorization"] = f"bearer {token}"
     headers["Accept"] = "application/vnd.vimeo.*+json;version=3.4"
+    kwargs.setdefault("verify", False)
     return requests.request(method, url, headers=headers, **kwargs)
 
 
@@ -80,7 +81,7 @@ def vimeo_upload(
             "Upload-Offset": "0",
             "Content-Type": "application/offset+octet-stream",
         }
-        rr = requests.patch(upload_link, headers=patch_headers, data=f)
+        rr = requests.patch(upload_link, headers=patch_headers, data=f, verify=False)
         rr.raise_for_status()
 
     vimeo_request(
