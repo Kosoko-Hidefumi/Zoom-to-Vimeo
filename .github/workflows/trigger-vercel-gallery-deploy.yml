@@ -1,6 +1,10 @@
 # Vercel のギャラリー（Vercel-for-Vimeo）を再デプロイする。
 # Repository secrets に VERCEL_DEPLOY_HOOK_URL（Deploy Hook の URL）を設定してください。
 # https://vercel.com/docs/deploy-hooks
+#
+# vimeo_metadata_export.csv が main に push されると:
+#   1. vimeo_results.csv から vimeo_links.xlsx / vimeo_links_omit.xlsx を生成してコミット
+#   2. Vercel の Deploy Hook を呼び出してギャラリーを再デプロイ
 
 name: Trigger Vercel gallery deploy
 
@@ -10,10 +14,39 @@ on:
     paths:
       - "vimeo_metadata_export.csv"
 
+permissions:
+  contents: write
+
 jobs:
-  deploy-hook:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install openpyxl
+
+      - name: Generate Excel files
+        run: |
+          python zoom_download/export_vimeo_excel.py \
+            --in-csv vimeo_results.csv \
+            --out-excel vimeo_links.xlsx
+
+      - name: Commit and push Excel files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add vimeo_links.xlsx vimeo_links_omit.xlsx
+          git diff --cached --quiet \
+            || git commit -m "chore: update vimeo_links Excel [skip ci]"
+          git push
+
       - name: Trigger Vercel production deploy
         env:
           VERCEL_DEPLOY_HOOK_URL: ${{ secrets.VERCEL_DEPLOY_HOOK_URL }}
