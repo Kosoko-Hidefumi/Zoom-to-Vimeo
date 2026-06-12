@@ -67,7 +67,7 @@ def vimeo_upload(
         token,
         json={
             "upload": {"approach": "tus", "size": size},
-            "name": title,
+            "name": title[:128],
         },
     )
     r.raise_for_status()

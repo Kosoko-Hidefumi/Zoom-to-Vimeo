@@ -17,6 +17,7 @@ import csv
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -58,6 +59,12 @@ def parse_args():
     p.add_argument("--csv", default=str(DEFAULT_CSV), help="追記対象のCSVパス")
     p.add_argument("--force", action="store_true", help="重複行も強制追記")
     p.add_argument("--update", action="store_true", help="【タイトル未確定】行のタイトルを更新する")
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="Outlook から見つかった招聘案内メールをすべて解析（Re/ミーティングアセット通知は除外）",
+    )
+    p.add_argument("-y", "--yes", action="store_true", help="確認プロンプトをスキップして追記")
     return p.parse_args()
 
 
@@ -68,6 +75,46 @@ def parse_args():
 def load_email_from_file(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as f:
         return f.read()
+
+
+def extract_pdf_attachment_text(msg) -> str:
+    """Outlook メールの PDF 添付からテキストを抽出（フライヤー用）。"""
+    parts: list[str] = []
+    try:
+        import fitz
+    except ImportError:
+        return ""
+
+    count = getattr(msg.Attachments, "Count", 0) or 0
+    for i in range(1, count + 1):
+        att = msg.Attachments.Item(i)
+        fname = att.FileName or ""
+        if not fname.lower().endswith(".pdf"):
+            continue
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp_path = tmp.name
+            att.SaveAsFile(tmp_path)
+            doc = fitz.open(tmp_path)
+            text = "\n".join(page.get_text() for page in doc)
+            doc.close()
+            if text.strip():
+                parts.append(f"\n--- PDF添付: {fname} ---\n{text}")
+        except Exception:
+            continue
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+    return "\n".join(parts)
+
+
+def get_email_body_with_attachments(msg) -> str:
+    body = msg.Body or ""
+    pdf_text = extract_pdf_attachment_text(msg)
+    if pdf_text:
+        return body + pdf_text
+    return body
 
 
 def get_emails_from_outlook(days: int) -> list:
@@ -108,12 +155,82 @@ def get_emails_from_outlook(days: int) -> list:
                 found.append({
                     "subject": subject,
                     "received": received_naive,
-                    "body": msg.Body,
+                    "body": get_email_body_with_attachments(msg),
                 })
         except Exception:
             continue
 
     return found
+
+
+def filter_recruitment_emails(emails: list) -> list:
+    """招聘案内メールのみ残し、同一講師・期間は最新/修正版を優先。"""
+    import re
+
+    skip_substrings = ("ミーティングアセット", "見学会", "見学者")
+    candidates = []
+    for m in emails:
+        subject = (m.get("subject") or "").strip()
+        if "Re:" in subject or "Re：" in subject:
+            continue
+        if any(s in subject for s in skip_substrings):
+            continue
+        if not (
+            "フライヤー" in subject
+            or "レクチャートピック" in subject
+            or "コンサルタント" in subject
+        ):
+            continue
+        candidates.append(m)
+
+    def flyer_priority(subject: str) -> int:
+        if "修正2" in subject:
+            return 3
+        if "修正" in subject:
+            return 2
+        if "フライヤー" in subject:
+            return 1
+        return 0
+
+    def group_key(subject: str) -> str:
+        date_range = re.search(r"(\d+/\d+-\d+/\d+)", subject)
+        if "Lian" in subject or "Kuo" in subject:
+            doctor = "Lian"
+        elif "本田" in subject or "Miyata" in subject:
+            doctor = "Miyata"
+        else:
+            doctor = subject
+        return f"{doctor}_{date_range.group(1) if date_range else subject}"
+
+    grouped: dict[str, dict] = {}
+    for m in candidates:
+        subject = m["subject"]
+        key = group_key(subject)
+        prev = grouped.get(key)
+        if prev is None:
+            grouped[key] = m
+            continue
+        if flyer_priority(subject) > flyer_priority(prev["subject"]):
+            grouped[key] = m
+        elif (
+            flyer_priority(subject) == flyer_priority(prev["subject"])
+            and m["received"] > prev["received"]
+        ):
+            grouped[key] = m
+
+    # フライヤー（PDF）がある講師・期間ではトピック通知メールを除外
+    flyer_keys = {
+        group_key(m["subject"])
+        for m in grouped.values()
+        if "フライヤー" in m["subject"] or "修正" in m["subject"]
+    }
+    result = []
+    for m in grouped.values():
+        key = group_key(m["subject"])
+        if "レクチャートピック" in m["subject"] and key in flyer_keys:
+            continue
+        result.append(m)
+    return sorted(result, key=lambda x: x["received"])
 
 
 def select_email(emails: list) -> str:
@@ -150,7 +267,7 @@ USER_PROMPT_TEMPLATE = """以下のメール本文を解析し、各セッショ
 | フィールド | ルール |
 |-----------|--------|
 | 講師名_日本語 | 日本人のみ。外国人は "" |
-| 講師名_英語 | 例: "Dr. Neal A. Palafox" |
+| 講師名_英語 | 例: "Dr. Neal A. Palafox"。モーニングカンファで症例提示者（Dr.〇〇）が書かれていても、招聘コンサルタントを記載 |
 | 専門科 | 例: "総合診療科" |
 | 所属 | そのまま |
 | 日付 | "YYYY/M/D" 形式 例: "2026/5/11" |
@@ -335,7 +452,7 @@ def load_existing_keys(csv_path: str) -> set:
     return keys
 
 
-def preview_rows(rows: list, csv_path: str):
+def preview_rows(rows: list, csv_path: str, auto_yes: bool = False) -> bool:
     print("\n【追記予定の行】")
     print("-" * 72)
     print(f"  {'日付':<12} {'時間帯':<6} {'講師名（英語）':<26} タイトル")
@@ -348,7 +465,34 @@ def preview_rows(rows: list, csv_path: str):
             name = name[:22] + "..."
         print(f"  {r['日付']:<12} {r['時間帯']:<6} {name:<26} {title}")
     print("-" * 72)
+    if auto_yes:
+        print(f"全 {len(rows)} 行を {csv_path} に追記します。")
+        return True
     print(f"全 {len(rows)} 行を {csv_path} に追記します。続行しますか？ [y/N]: ", end="", flush=True)
+    return input().strip().lower() == "y"
+
+
+def dedupe_rows(rows: list) -> list:
+    """同一キー（日付×開始時刻×講師名）の行は後勝ち。"""
+    seen: dict[tuple, dict] = {}
+    for row in rows:
+        key = (row["日付"], row["開始時刻"], row["講師名（英語）"])
+        seen[key] = row
+    return list(seen.values())
+
+
+def process_email_bodies(email_bodies: list[tuple[str, str]]) -> list:
+    """(ラベル, 本文) のリストを Claude API で解析し CSV 行に変換。"""
+    all_rows: list = []
+    for label, body in email_bodies:
+        print(f"\n--- 解析: {label} ---")
+        sessions = call_claude_api(body)
+        if not sessions:
+            print("  → セッションなし（スキップ）")
+            continue
+        print(f"  → {len(sessions)} 件のセッションを検出")
+        all_rows.extend(build_csv_rows(sessions))
+    return dedupe_rows(all_rows)
 
 
 def load_all_rows(csv_path: str) -> list:
@@ -494,9 +638,10 @@ def main():
         return
 
     # ① メール本文取得
+    email_bodies: list[tuple[str, str]] = []
     if args.file:
         print(f"ファイルからメール本文を読み込み中: {args.file}")
-        email_body = load_email_from_file(args.file)
+        email_bodies.append((args.file, load_email_from_file(args.file)))
     else:
         print(f"Outlook の受信トレイから過去 {args.days} 日間を検索中...")
         emails = get_emails_from_outlook(args.days)
@@ -504,18 +649,27 @@ def main():
             print(f"対象メールが見つかりませんでした（過去 {args.days} 日間）。")
             print("--file オプションでテキストファイルから読み込むことができます。")
             sys.exit(0)
-        email_body = select_email(emails)
+        if args.all:
+            picked = filter_recruitment_emails(emails)
+            if not picked:
+                print("招聘案内メール（フライヤー等）が見つかりませんでした。")
+                sys.exit(0)
+            print(f"\n{len(picked)} 通の招聘案内メールを処理します：")
+            for m in picked:
+                print(f"  {m['received'].strftime('%Y/%m/%d')}  {m['subject']}")
+            email_bodies = [
+                (m["subject"], m["body"]) for m in picked
+            ]
+        else:
+            email_bodies.append(("選択メール", select_email(emails)))
 
     # ② Claude API で解析
     print("\nClaude API でメールを解析中...")
-    sessions = call_claude_api(email_body)
-    if not sessions:
+    rows = process_email_bodies(email_bodies)
+    if not rows:
         print("解析結果が空でした。メール本文を確認してください。")
         sys.exit(1)
-    print(f"{len(sessions)} 件のセッションを検出しました。")
-
-    # ③ CSV行に変換
-    rows = build_csv_rows(sessions)
+    print(f"\n合計 {len(rows)} 行（重複除去後）")
 
     # ④ 重複チェック
     existing_keys = load_existing_keys(args.csv)
@@ -539,9 +693,7 @@ def main():
         sys.exit(0)
 
     # ⑤ プレビュー & 確認
-    preview_rows(new_rows, args.csv)
-    answer = input().strip().lower()
-    if answer != "y":
+    if not preview_rows(new_rows, args.csv, auto_yes=args.yes):
         print("キャンセルしました。")
         sys.exit(0)
 
