@@ -215,9 +215,9 @@ python vimeo_upload.py --csv consultant_vimeo.csv --out-csv vimeo_results.csv --
 ### 5.4 補足
 
 - 突合は **CSV「配信用動画タイトル」** と **ローカル MP4 のファイル名（拡張子除く）** を同一ルールでキー化して行います（Zoom 保存時と整合）。
-- **既に Vimeo 上に同じタイトルキーがある動画はスキップ**されます（`skipped(already_on_vimeo)`）。
-- **前回の結果 CSV で `status=uploaded` の行もスキップ**されます（`skipped(already_uploaded)`）。
-- 一覧 API を叩きたくないとき：`--no-vimeo-check`
+- **重複アップロード防止の一次情報は `consultant_vimeo.csv` 自体の「Vimeo URI」「Vimeoリンク」列**です。アップロード成功時・既存確認でヒットした時に、この2列へ自動で書き戻されます（`--no-write-back` で無効化可）。この列に値がある行は Vimeo に問い合わせることなく確実にスキップされるため、2回目以降の実行はどんどん高速・確実になります。
+- 上記2列がまだ空の行だけ、保険としてタイトル突合で Vimeo 側を確認します（`skipped(already_on_vimeo:backfilled)`）。見つかった場合は即座に CSV へ書き戻されます。一覧 API を叩きたくないとき：`--no-vimeo-check`
+- **前回の結果 CSV（`--resume-from`）で `status=uploaded` の行もスキップ**されます（`skipped(already_uploaded)`、互換用。通常は CSV 自体の列があれば不要）。
 - アップロード時に CSV の「パスコード」列が Vimeo のパスワード制限に設定されます。
 
 ---
