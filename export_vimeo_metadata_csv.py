@@ -59,7 +59,10 @@ def fetch_vimeo_videos(token: str) -> List[Dict[str, Any]]:
                     "uri": (v.get("uri") or "").strip(),
                 }
             )
-        url = (payload.get("paging") or {}).get("next") or None
+        next_url = (payload.get("paging") or {}).get("next") or None
+        if next_url and next_url.startswith("/"):
+            next_url = f"{VIMEO_API}{next_url}"
+        url = next_url
     return rows
 
 
